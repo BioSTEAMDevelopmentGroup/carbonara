@@ -14,7 +14,7 @@ Carbonara: Process Models for Carbon Capture, Utilization, and Storage (CCUS) in
 Why Carbonara?
 --------------
 
-New pathways for the carbon economy are constantly emerging, while established technologies continue to improve. The growing portfolio of technologies for carbon capture, utilization, and storage (CCUS) requires rigorous process modeling to evaluate economic/environmental impacts, identify trade-offs, and guide technology development. Carbonara provides a dedicated home for CCUS process models within the BioSTEAM ecosystem, complementing the Bioindustrial-Park and enabling focused development of models for the carbon economy.
+New pathways for the carbon economy are constantly emerging, while established technologies continue to improve. The growing portfolio of technologies for carbon capture, utilization, and storage (CCUS) requires rigorous process modeling to evaluate economic/environmental impacts, identify trade-offs, and guide technology development. *Carbonara* provides a dedicated home for CCUS process models within the BioSTEAM ecosystem, complementing the Bioindustrial-Park and enabling focused development of models for the carbon economy.
 
 Installation
 ------------
