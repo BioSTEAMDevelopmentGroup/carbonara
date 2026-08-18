@@ -38,7 +38,7 @@ price_data = {
     'BFG': {}, # Blast Furnace Gas (flue gas from steelmaking)
     'RFG': {}, # Refinery Flue Gas
     'sugarcane': {},
-    'ricestraw': {},
+    'sugarcane 2G': {},
 }
 titer_data = {
 }
@@ -47,12 +47,38 @@ productivity_data = {
 yield_data = {
 }
 
+# Key scenarios (5 total)
+# BFG, AcOH vs EtOH (2)
+# BFG vs RFG vs sugarcane, EtOH (3 - 1)
+# sugarcane CO2/EtOH  vs. sugarcane sugars/EtOH (2 - 1)
+
+# Key assumptions
+# Electricity - assume renewable
+# Steam - assume solar
+
+# LCA methodology used: end-of-life
+# Questions:
+# 1. What bioproduct is best?
+# Ethanol, at comparable performance and low H2 price (requires more reducing power).
+# 2. Which feedstocks in best? Why?
+# * Concentrated CO2 is critical for mass transfer, RFG is not feasible
+# * While BFG is less carbon instensive, 
+#   due to avoiding emissions associated to biomass,
+#   the cost is infeasible.
+# * Traditional sugarcane offers integrated separations/heat/power, which
+#   supports economies-of-scale and makes carbon utilization feasible.
+# * Cellulosic ethanol integration is a disadvantage because biomass is used to 
+#   satisfy the high power/heating demand, and there is not enough biomass left
+#   to justify the cost of pretreatment equipment.
+# 3. Carbon utilization is the more economical route with integration of 
+#    separation, heat, and power equipment at a biorefinery.
+
 class PlatformBioproductProcess(bst.ProcessModel):
     """
     Examples
     --------
     >>> from biorefineries.gas_fermentation import Biorefinery
-    >>> pm = PlatformBioproductProcess(simulate=False, scenario='glucose growth')
+    >>> pm = PlatformBioproductProcess(simulate=False, scenario='BFG/EtOH')
     >>> pm.system.simulate()
     >>> assumptions, results = br.baseline()
     >>> pm.system.diagram() # View diagram
@@ -191,7 +217,9 @@ class PlatformBioproductProcess(bst.ProcessModel):
         def set_gas_fed_bioreactor_length_to_diameter(length_to_diameter):
             self.gas_fed_bioreactor.length_to_diameter = length_to_diameter
         
-        @optimized_parameter(bounds=[0.2, 0.6], baseline=0.5, element='Gas-fed bioreactor', name='agitation power')
+        @optimized_parameter(bounds=[0.2, 0.6], baseline=0.5,
+                             element='Gas-fed bioreactor', 
+                             name='agitation power')
         def set_gas_fed_bioreactor_agitation_power(kW_per_m3):
             self.gas_fed_bioreactor.kW_per_m3 = kW_per_m3
         
