@@ -57,21 +57,54 @@ yield_data = {
 # Steam - assume solar
 
 # LCA methodology used: end-of-life
+
+# General Approach:
+# Compare configurations under uncertainty, 
+# under harmonized market assumtions
+# using optimized optimized design decisions.
+
+# Scalable analysis problem:
+# Minutes to solve
+# Thousands of simulations needed for optimization, 
+# Thousands of scenarios for uncertainty analysis:
+# 1000 * 1000 * 1 min -> 2 years of simulation.
+
+# Methology for scalability:
+# f(d, c, m) -> h(g(d, c), c, m)
+# g(p) -> g*(p) | replace g with a surrogate ML model g*
+# h -> Cash flow analysis
+# g -> Process simulation
+# d -> Design decisions
+# * Length to diameter
+# * Agitation power 
+# * Compressure pressure
+# m -> market prices
+# c -> Other contextual parameters (cannot be controlled)
+# * Mass transfer coefficients
+# * Processing capacity
+# Create ML model as a GP using a mesh grid of data points (10 * 10 * 10 * 10 -> 10,000 points).
+
 # Questions:
 # 1. What bioproduct is best?
-# Ethanol, at comparable performance and low H2 price (requires more reducing power).
-# 2. Which feedstocks in best? Why?
+# Answer -> Ethanol, at comparable performance and low H2 price (requires more reducing power).
+# Analysis -> Break-even hydrogen price vs titer under uncertainty, assuming constant low and high productivities.
+# 2. Which feedstocks are best? Why?
+# Answer -> 
 # * Concentrated CO2 is critical for mass transfer, RFG is not feasible
-# * While BFG is less carbon instensive, 
-#   due to avoiding emissions associated to biomass,
-#   the cost is infeasible.
-# * Traditional sugarcane offers integrated separations/heat/power, which
-#   supports economies-of-scale and makes carbon utilization feasible.
-# * Cellulosic ethanol integration is a disadvantage because biomass is used to 
-#   satisfy the high power/heating demand, and there is not enough biomass left
-#   to justify the cost of pretreatment equipment.
-# 3. Carbon utilization is the more economical route with integration of 
+# * While BFG is less carbon instensive, due to avoiding emissions 
+#   associated to biomass, the cost is infeasible.
+# * Traditional sugarcane offers integrated separations/heat/power, 
+#   which supports economies-of-scale and makes carbon utilization feasible.
+# * Cellulosic ethanol integration is a disadvantage because biomass is 
+#   used to satisfy the high power/heating demand, and there is not enough 
+#   biomass left to justify the cost of pretreatment equipment.
+# Analysis ->
+# * Harmonized uncertainty analysis with BFG as the baseline.
+# 3. What can we do to make carbon utilization more feasible? 
+# Answer -> 
+#    Carbon utilization is the more economical route with integration of 
 #    separation, heat, and power equipment at a biorefinery.
+    
 
 class PlatformBioproductProcess(bst.ProcessModel):
     """
@@ -90,7 +123,6 @@ class PlatformBioproductProcess(bst.ProcessModel):
         product: str = 'ethanol'
         glucose_growth: bool = True
         feedstock: str = 'BFG' # Alternatively 'biomass' or 'glucose'
-        fuel: str = 'cornstover' # Either 'miscanthus' or 'cornstover'
     
     @property
     def name(self):
@@ -106,25 +138,13 @@ class PlatformBioproductProcess(bst.ProcessModel):
             product=product,
             glucose_growth=True,
             feedstock=feedstock,
-            fuel='cornstover',
             name=scenario,
         )
-    
-    def optimize(self):
-        with catch_warnings(action="ignore"):
-            results, convergence_model = self.model.optimize(
-                self.MSP,  
-                convergence_model='linear regressor', 
-                # method='differential evolution',
-            )
-        for p, x in zip(self.model.optimized_parameters, results.x): p.setter(x)
-        return results
     
     def create_thermo(self):
         return create_chemicals(
             [self.scenario.feedstock, 
-             self.scenario.product, 
-             self.scenario.biomass]
+             self.scenario.product]
         )
     
     def create_system(self):
