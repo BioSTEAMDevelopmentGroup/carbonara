@@ -58,10 +58,13 @@ yield_data = {
 
 # LCA methodology used: end-of-life
 
+# Presentation:
+# Explain the importance of uncertainty, harmonized assumptions, and design of bioreactor
+
 # General Approach:
 # Compare configurations under uncertainty, 
 # under harmonized market assumtions
-# using optimized optimized design decisions.
+# using optimized optimized design decision.
 
 # Scalable analysis problem:
 # Minutes to solve
@@ -76,11 +79,9 @@ yield_data = {
 # g -> Process simulation
 # d -> Design decisions
 # * Length to diameter
-# * Agitation power 
-# * Compressure pressure
 # m -> market prices
 # c -> Other contextual parameters (cannot be controlled)
-# * Mass transfer coefficients
+# * Mass transfer coefficients (CO2, CO, H2)
 # * Processing capacity
 # Create ML model as a GP using a mesh grid of data points (10 * 10 * 10 * 10 -> 10,000 points).
 
