@@ -12,12 +12,13 @@ from carbonara.fermentation.process_settings import (
     characterization_factors as CFs
 )
 from carbonara.fermentation.systems import create_hydrogen_fermentation_system
+from biorefineries.cane.systems import create_sugarcane_to_ethanol_system
 from biorefineries.tea import (
     create_cellulosic_ethanol_tea as create_tea
 )
 
 __all__ = (
-    'PlatformBioproductProcess',
+    'EthanolProductionProcess',
 )
 
 # DO NOT DELETE:
@@ -34,11 +35,9 @@ results_folder = os.path.join(os.path.dirname(__file__), 'results')
 
 price_data = {
     'Ethanol': {},
-    'AceticAcid': {},
     'BFG': {}, # Blast Furnace Gas (flue gas from steelmaking)
     'RFG': {}, # Refinery Flue Gas
     'sugarcane': {},
-    'sugarcane 2G': {},
 }
 titer_data = {
 }
@@ -47,19 +46,27 @@ productivity_data = {
 yield_data = {
 }
 
-# Key scenarios (5 total)
-# BFG, AcOH vs EtOH (2)
-# BFG vs RFG vs sugarcane, EtOH (3 - 1)
-# sugarcane CO2/EtOH  vs. sugarcane sugars/EtOH (2 - 1)
+# Key scenarios (4 total)
+# BFG vs RFG vs sugarcane CO2  vs. sugarcane sugars, EtOH (4)
 
 # Key assumptions
 # Electricity - assume renewable
-# Steam - assume solar
+# Steam - assume biomass
 
 # LCA methodology used: end-of-life
 
 # Presentation:
 # Explain the importance of uncertainty, harmonized assumptions, and design of bioreactor
+# Show big plot of uncertainty across each configuration, with overlap.
+
+# Let's see where most of the uncertainties come from... 
+# Design decisions are extremely important! We should optimize these for each configuration
+# This reduces uncertainty, but we still do not have any conclusive insights.
+
+# We have to take a closer look by comparing each scenario under harmonized assumptions.
+# In the first graph we are comparing BFG vs RFG, (BFG wins because XYZ).
+# In the second graph we compare BFG vs sugarcane, (sugarcane is more economical but more carbon intensive)
+# In the last graph we can see how integrating CU with sugarcane is better than just sugarcane.
 
 # General Approach:
 # Compare configurations under uncertainty, 
@@ -79,11 +86,15 @@ yield_data = {
 # g -> Process simulation
 # d -> Design decisions
 # * Length to diameter
+# * H2 to CO2 feed ratio
+# * Agitation
+# * Bubble column or agitated
 # m -> market prices
 # c -> Other contextual parameters (cannot be controlled)
 # * Mass transfer coefficients (CO2, CO, H2)
 # * Processing capacity
-# Create ML model as a GP using a mesh grid of data points (10 * 10 * 10 * 10 -> 10,000 points).
+# Create ML model as a GP using a mesh grid of data points
+# (5^6 * (5 + 1) -> 93,750 points x 3 configurations).
 
 # Questions:
 # 1. What bioproduct is best?
@@ -100,14 +111,14 @@ yield_data = {
 #   used to satisfy the high power/heating demand, and there is not enough 
 #   biomass left to justify the cost of pretreatment equipment.
 # Analysis ->
-# * Harmonized uncertainty analysis with BFG as the baseline.
+# * Harmonized uncertainty analysis for each questions.
 # 3. What can we do to make carbon utilization more feasible? 
 # Answer -> 
 #    Carbon utilization is the more economical route with integration of 
 #    separation, heat, and power equipment at a biorefinery.
     
 
-class PlatformBioproductProcess(bst.ProcessModel):
+class EthanolProductionProcess(bst.ProcessModel):
     """
     Examples
     --------
@@ -120,43 +131,73 @@ class PlatformBioproductProcess(bst.ProcessModel):
     
     """
     class Scenario:
-        name: str = 'BFG/ethanol'
-        product: str = 'ethanol'
-        glucose_growth: bool = True
-        feedstock: str = 'BFG' # Alternatively 'biomass' or 'glucose'
-    
-    @property
-    def name(self):
-        return self.scenario.name
-    
-    @classmethod
-    def as_scenario(cls, scenario):
-        try:
-            feedstock, product = scenario.split('/')
-        except:
-            raise ValueError("invalid scenario")
-        return cls.Scenario(
-            product=product,
-            glucose_growth=True,
-            feedstock=feedstock,
-            name=scenario,
-        )
+        feedstock: str = 'BFG' # Alternatively 'sugarcane', 'BFG', or 'RFG'
+        integrated: bool = True # Whether or not CO2 from anaerobic fermentation is valorized
     
     def create_thermo(self):
-        return create_chemicals(
-            [self.scenario.feedstock, 
-             self.scenario.product]
+        chemicals = create_chemicals()
+        chemicals.compile()
+        feedstock = self.scenario.feedstock
+        if feedstock == 'BFG':
+            # Composition
+            # https://www.researchgate.net/publication/342635556_Advanced_Packed-Bed_Ca-Cu_Looping_Process_for_the_CO2_Capture_From_Steel_Mill_Off-Gases
+            bfg = bst.Stream(CO=23, CO2=23, H2=4.5, N2=49.5, units='m3/hr', phase='g')
+            gases = 'CO', 'CO2', 'H2', 'N2'
+            gas_flows = bfg.imass[gases] 
+            chemicals.define_group(
+                'BFG', gases, gas_flows, wt=True
+            )
+        elif feedstock == 'sugarcane':
+            sugarcane = dict(
+                Water=0.7,
+                Glucose=0.01208,
+                Sucrose=0.1369,
+                Ash=0.006,
+                Cellulose=0.06115,
+                Hemicellulose=0.03608,
+                Lignin=0.03276,
+                Solids=0.015,
+            )
+            components, flows = zip(*sugarcane.items())
+            chemicals.define_group(
+                'sugarcane', components, flows, wt=True
+            )    
+        chemicals.define_group(
+            'Biomass', 
+            ['Water', 'Solids', 
+             'Ash', 'Lignin', 
+             'Cellulose', 'Hemicellulose'],
+            [0.2, 0.04023529411764703, 
+             0.015647058823529406, 0.1616, 
+             0.3592, 0.22331764705882354],
+            wt=True,
         )
+        return chemicals        
     
     def create_system(self):
         scenario = self.scenario
         load_process_settings()
-        system = create_hydrogen_fermentation_system(
-            glucose_growth=scenario.glucose_growth,
-            product=scenario.product,
-            feedstock=scenario.feedstock,
-            fuel=scenario.biomass,
-        )
+        feedstock = scenario.feedstock
+        if feedstock == 'sugarcane':
+            with bst.System() as system:
+                etoh_sys = create_sugarcane_to_ethanol_system(
+                    
+                    WWT_kwargs=dict(kind='high-rate')
+                )
+                if scenario.integrated:
+                    system = create_hydrogen_fermentation_system(
+                        glucose_growth=scenario.glucose_growth,
+                        product=scenario.product,
+                        feedstock=scenario.feedstock,
+                        fuel=scenario.biomass,
+                    )
+        else:
+            system = create_hydrogen_fermentation_system(
+                glucose_growth=scenario.glucose_growth,
+                product=scenario.product,
+                feedstock=scenario.feedstock,
+                fuel=scenario.biomass,
+            )
         self.tea = create_tea(system)
         system.set_tolerance(
             rmol=1e-4, mol=1e-3, maxiter=50, 
