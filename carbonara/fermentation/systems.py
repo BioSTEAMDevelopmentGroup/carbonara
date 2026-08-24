@@ -2,21 +2,14 @@
 """
 """
 import biosteam as bst
-from math import inf
-from scipy.stats import gmean
-import numpy as np
-import flexsolve as flx
-from biorefineries.gas_fermentation.property_package import create_acetate_ester_chemicals, create_cc_chemicals
-from biorefineries.cellulosic.units import SeedTrain
+from biorefineries import cane
 
 __all__ = (
-    'create_hydrogen_oleochemical_system',
-    'create_substrate_oleochemical_system',
-    'create_glucose_oleochemical_system',
-    'create_biomass_oleochemical_system',
-    'create_corn_oleochemical_system',
-    'create_acetic_acid_separation_system',
-    'create_ccc_sys'
+    'create_hydrogen_fermentation_system',
+    'create_sugarcane_fermentation_system',
+    'create_hydrogen_ethanol_system',
+    'create_sugarcane_ethanol_system',
+    'create_hydrogen_sugarcane_ethanol_system',
 )
 
 # Price sources:
@@ -27,12 +20,43 @@ __all__ = (
 # https://www.chemanalyst.com/Pricing-data/ethyl-acetate-75
 
 @bst.SystemFactory(
-    ID='acetyl_ester_sys',
-    ins=[dict(ID='hydrogen', H2=100, P=101325e1, price=2, phase='g')],
-    outs=[dict(ID='product', price=3)],
-    fthermo=create_acetate_ester_chemicals
+    ID='sugarcane_fermentation_sys', 
+    ins=['sugarcane'], 
+    outs=['beer', 'emissions']
 )
-def create_hydrogen_oleochemical_system(
+def create_sugarcane_fermentation_system(ins, outs):
+    sugarcane, *ethanol = ins
+    beer, emissions = outs
+    shredded_cane = bst.Stream()
+    cane.create_feedstock_handling_system(
+        area=100, ins=sugarcane, outs=shredded_cane, mockup=True,
+    )
+    juice = bst.Stream()
+    cane.create_juicing_system(
+        area=200,
+        ins=shredded_cane,
+        outs=juice,
+        pellet_bagasse=False,
+        dry_bagasse=True,
+        mockup=True
+    )
+    cane.create_sucrose_fermentation_system(
+        ins=juice,
+        outs=[beer, '', emissions],
+        scrubber=False,
+        mockup=True,
+        add_urea=True,
+    )
+    
+
+@bst.SystemFactory(
+    ID='hydrogen_fermentation_sys',
+    ins=[dict(ID='media', Water=1000, T=298.15),
+         'carbon_source', 
+         dict(ID='hydrogen', H2=100, P=101325e1, price=2, phase='g')],
+    outs=['beer'],
+)
+def create_hydrogen_fermentation_system(
         ins, outs, 
         glucose_growth=True,
         carbon_capture=False, 
@@ -40,113 +64,60 @@ def create_hydrogen_oleochemical_system(
         product='Dodecanol',
         carbon_source='biomass',
     ):
-    AcOH_media = bst.Stream(ID='AcOH_media',  Water=100000, units='kg/hr')
-    oleochemical_media = bst.Stream(ID='oleochemical_media',  Water=0, units='kg/hr')
-    H2, = ins
-    oleochemical_product, = outs
+    media, carbon_source, H2, = ins
+    beer, = outs
     H2.register_alias('hydrogen')
-    oleochemical_product.register_alias('product')
-    flue_gas = bst.Stream('flue_gas', phase='g')
-    # TODO: Add cellmass recycle and small ammount of cellmass production (not 10%)
-    # growth = bst.Rxn('H2 + CO2 -> Cellmass + H2O', reactant='CO2',
-    #                  X=0.1, correct_atomic_balance=True) 
-    # rxn += growth
-    # rxn_by_mass = rxn.copy('wt')
-    # cellmass_coef = rxn_by_mass.istoichiometry['Cellmass'] / rxn_by_mass.istoichiometry['AceticAcid']
-    if carbon_source == 'biomass':
-        rxn = bst.Rxn('H2 + CO2 -> AceticAcid + H2O',
-                      reactant='CO2', correct_atomic_balance=True, X=1) 
-        brxn = rxn.backwards(reactant='AceticAcid')
-        AcOH_production = bst.GasFedBioreactor(
-            (100, 'AcOH_production'),
-            ins=[AcOH_media, H2, flue_gas], 
-            outs=('vent_1', 'effluent_1'), tau=100, 
-            reactions=rxn, backward_reactions=brxn,
-            optimize_power=False,
-            variable_gas_feeds=[1, 2],
-            gas_substrates=('H2', 'CO2'),
-            titer={'AceticAcid': 100},
-            batch=False,
-            length_to_diameter=12,
-            V_max=3785, # TODO: Double check validity with lanzatech (typically V_max=500)
-            theta=0.5,
-            kW_per_m3=0.,
-            T=37 + 273.15,
-        )
-        @AcOH_production.add_specification(run=True)
-        def adjust_performance():
-            # titer = AcOH_production.titer['AceticAcid']
-            # AcOH_production.titer['Cellmass'] = titer * AcOH_production.cellmass_coefficient
-            if flue_gas.isempty():
-                if carbon_capture:
-                    flue_gas.imass['CO2'] = 99
-                    flue_gas.imass['O2'] = 1
-                else:
-                    flue_gas.imass['CO2'] = 10
-                    flue_gas.imass['N2'] = 88
-                    flue_gas.imass['O2'] = 2
-            if H2.isempty():
-                H2.imol['H2'] = 100
-            productivity = AcOH_production.productivity
-            AcOH_production.tau = AcOH_production.titer['AceticAcid'] / productivity
-    elif carbon_source == 'BFG':
-        ins.append(flue_gas)
-        rxn = bst.RxnSys(
-            bst.Rxn(
-                'CO + H2O -> CO2 + H2',
-                reactant='CO', correct_atomic_balance=True, X=1
-            ),
-            bst.Rxn(
-                'H2 + CO2 -> AceticAcid + H2O',
-                reactant='CO2', correct_atomic_balance=True, X=1
-            ),
-        )
-        feed_gas = bst.Stream(phase='g')
-        AcOH_production = bst.GasFedBioreactor(
-            (100, 'AcOH_production'),
-            ins=[AcOH_media, feed_gas], 
-            outs=('vent_1', 'effluent_1'), 
-            tau=100, 
-            reactions=rxn, 
-            optimize_power=False,
-            gas_substrates=('H2', 'CO2', 'CO'),
-            titer={'AceticAcid': 100},
-            batch=False,
-            length_to_diameter=12,
-            V_max=3785, # TODO: Double check validity with lanzatech (typically V_max=500)
-            theta=0.5,
-            kW_per_m3=0.,
-            T=37 + 273.15,
-        )
-        # AcOH_production.cellmass_coefficient = cellmass_coef
-        # AcOH_production.H2_over_C = 4.1 # Initial guess
-        @AcOH_production.add_specification(run=False)
-        def adjust_productivity():
-            # titer = AcOH_production.titer['AceticAcid']
-            # AcOH_production.titer['Cellmass'] = titer * AcOH_production.cellmass_coefficient
-            productivity = AcOH_production.productivity
-            AcOH_production.tau = AcOH_production.titer['AceticAcid'] / productivity
-            H2.imol['H2'] = 0
-            H2_demand = sum([i.imol['CO2', 'CO'] for i in feed_gas_mixer.ins]) * [2, 1]
-            H2_constant = sum([i.imol['H2'] for i in feed_gas_mixer.ins])
-            H2.imol['H2'] = H2_demand.sum() - H2_constant # Stoichiometric amount needed
-            feed_gas_mixer.run()
-            AcOH_production.run()
-            vent, effluent = AcOH_production.outs
-            effluent.imol['AceticAcid'] += vent.imol['AceticAcid']
-            vent.imol['AceticAcid'] = 0
-            error = AcOH_production.atomic_balance_error()
-            assert sum(error.values()) < 1e-3
-    else:
-        raise ValueError('invalid carbon source')
-    AcOH_media.set_feed_priority(-1)
-    for i in AcOH_production.gas_coolers: i.cool_only = True
-    AcOH_production.productivity = 1 # g / L / h
+    watergas_shift = bst.Rxn(
+        'CO + H2O -> CO2 + H2',
+        reactant='CO', correct_atomic_balance=True, X=1
+    )
+    production = bst.Rxn(
+        'H2 + CO2 -> Ethanol + H2O',
+        reactant='CO2', correct_atomic_balance=True, X=1
+    )
+    growth = bst.Rxn(
+        'H2 + CO2 -> Bacteria + H2O', reactant='CO2',
+        X=1, correct_atomic_balance=True
+    ) 
+    rxn = bst.SeriesReaction([watergas_shift, production, growth])
+    bioreactor = bst.GasFedBioreactor(
+        (100, 'bioreactor'),
+        ins=[media, carbon_source, H2], 
+        outs=('vent_1', 'effluent_1'), 
+        tau=100, 
+        reactions=rxn, 
+        optimize_power=False,
+        gas_substrates=('H2', 'CO2', 'CO'),
+        titer={'Ethanol': 20},
+        batch=False,
+        length_to_diameter=12,
+        V_max=3785,
+        theta=0.5,
+        kW_per_m3=0.,
+        desing='bubble column',
+        T=37 + 273.15,
+    )
+    
+    @bioreactor.add_specification(run=False)
+    def adjust_fermentation_performance():
+        productivity = bioreactor.productivity
+        bioreactor.tau = bioreactor.titer['Ethanol'] / productivity
+        gas = carbon_source.copy()
+        rxn.force_reaction(gas)
+        H2_demand = -gas.imol['H2']
+        H2.imol['H2'] = H2_demand * bioreactor.H2_CO2_ratio
+        rxn.X[1] = bioreactor.specific_yield
+        bioreactor.run()
+        error = bioreactor.atomic_balance_error()
+        assert sum(error.values()) < 1e-3
+    
+    for i in bioreactor.gas_coolers: i.cool_only = True
+    bioreactor.productivity = 1 # g / L / h
     centrifuge_a = bst.SolidsCentrifuge(
         100,
-        ins=AcOH_production-1, 
-        outs=('wastewater', ''),
-        split=dict(Cellmass=1),
+        ins=bioreactor-1, 
+        outs=('recycled_cellmass', ''),
+        split=dict(Cellmass=0.9),
         solids=('Yeast',),
         moisture_content=0.6,
         strict_moisture_content=False,

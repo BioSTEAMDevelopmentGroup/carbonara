@@ -142,7 +142,7 @@ class EthanolProductionProcess(bst.ProcessModel):
             # Composition
             # https://www.researchgate.net/publication/342635556_Advanced_Packed-Bed_Ca-Cu_Looping_Process_for_the_CO2_Capture_From_Steel_Mill_Off-Gases
             bfg = bst.Stream(CO=23, CO2=23, H2=4.5, N2=49.5, units='m3/hr', phase='g')
-            gases = 'CO', 'CO2', 'H2', 'N2'
+            gases = ('CO', 'CO2', 'H2', 'N2')
             gas_flows = bfg.imass[gases] 
             chemicals.define_group(
                 'BFG', gases, gas_flows, wt=True
@@ -162,7 +162,7 @@ class EthanolProductionProcess(bst.ProcessModel):
             chemicals.define_group(
                 'sugarcane', components, flows, wt=True
             )    
-        chemicals.define_group(
+        chemicals.define_group( # Assume Miscanthus is a good representative biomass
             'Biomass', 
             ['Water', 'Solids', 
              'Ash', 'Lignin', 
@@ -234,6 +234,11 @@ class EthanolProductionProcess(bst.ProcessModel):
             if scenario.carbon_source == 'glucose': return
             self.hydrogen.price = price
         
+        @parameter(units='by mol theoretical', element='Gas-fed bioreactor',
+                   bounds=[0.8, 1.2], baseline=1, distribution='uniform')
+        def set_gas_fed_bioreactor_H2_CO2_ratio(H2_CO2_ratio):
+            self.gas_fed_bioreactor.H2_CO2_ratio = H2_CO2_ratio
+        
         @parameter(units='g/L', element='Gas-fed bioreactor',
                    **titer_data[scenario.product])
         def set_gas_fed_bioreactor_titer(titer):
@@ -244,10 +249,10 @@ class EthanolProductionProcess(bst.ProcessModel):
         def set_gas_fed_bioreactor_productivity(productivity):
             self.gas_fed_bioreactor.productivity = productivity
         
-        @parameter(units='% theoretical', element='Gas-fed bioreactor', 
-                   bounds=[85, 95], baseline=90, distribution='uniform')
-        def set_gas_fed_bioreactor_yield(product_yield):
-            self.gas_fed_bioreactor.product_yield = product_yield
+        @parameter(units='g-product/g-DCW', element='Gas-fed bioreactor', 
+                   bounds=[12, 33], baseline=20, distribution='uniform')
+        def set_gas_fed_bioreactor_specific_yield(specific_yield):
+            self.gas_fed_bioreactor.specific_yield = specific_yield
         
         # @parameter(distribution=dist.electricity_price_distribution, units='USD/kWh',
         #            element='electricity', baseline=dist.mean_electricity_price)
