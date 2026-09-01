@@ -62,6 +62,7 @@ def create_hydrogen_fermentation_system(
         dewatering=False, 
         product='Dodecanol',
         carbon_source='biomass',
+        variable_feeds=None,
     ):
     carbon_source, H2, = ins
     beer, = outs
@@ -101,13 +102,14 @@ def create_hydrogen_fermentation_system(
     @bioreactor.add_specification(run=False)
     def adjust_fermentation_performance():
         productivity = bioreactor.productivity
-        bioreactor.tau = bioreactor.titer['Ethanol'] / productivity
+        titer = bioreactor.titer['Ethanol']
+        bioreactor.tau = titer / productivity
         gas = carbon_source.copy()
         rxn.force_reaction(gas)
         H2_demand = -gas.imol['H2']
         H2.imol['H2'] = H2_demand * bioreactor.H2_ratio
         rxn.X[1] = bioreactor.specific_yield
-        
+        media.F_vol['Water'] = / titer 
         bioreactor.run()
         error = bioreactor.atomic_balance_error()
         assert sum(error.values()) < 1e-3
