@@ -234,10 +234,10 @@ class EthanolProductionProcess(bst.ProcessModel):
             if scenario.carbon_source == 'glucose': return
             self.hydrogen.price = price
         
-        @parameter(units='by mol theoretical', element='Gas-fed bioreactor',
+        @parameter(units='actual / theoretical', element='Gas-fed bioreactor',
                    bounds=[0.8, 1.2], baseline=1, distribution='uniform')
-        def set_gas_fed_bioreactor_H2_CO2_ratio(H2_CO2_ratio):
-            self.gas_fed_bioreactor.H2_CO2_ratio = H2_CO2_ratio
+        def set_gas_fed_bioreactor_H2_ratio(H2_ratio):
+            self.gas_fed_bioreactor.H2_ratio = H2_ratio
         
         @parameter(units='g/L', element='Gas-fed bioreactor',
                    **titer_data[scenario.product])

@@ -21,7 +21,7 @@ __all__ = (
 
 @bst.SystemFactory(
     ID='sugarcane_fermentation_sys', 
-    ins=['sugarcane'], 
+    ins=[cane.streams.sugarcane], 
     outs=['beer', 'emissions']
 )
 def create_sugarcane_fermentation_system(ins, outs):
@@ -51,8 +51,7 @@ def create_sugarcane_fermentation_system(ins, outs):
 
 @bst.SystemFactory(
     ID='hydrogen_fermentation_sys',
-    ins=[dict(ID='media', Water=1000, T=298.15),
-         'carbon_source', 
+    ins=['carbon_source', 
          dict(ID='hydrogen', H2=100, P=101325e1, price=2, phase='g')],
     outs=['beer'],
 )
@@ -64,7 +63,7 @@ def create_hydrogen_fermentation_system(
         product='Dodecanol',
         carbon_source='biomass',
     ):
-    media, carbon_source, H2, = ins
+    carbon_source, H2, = ins
     beer, = outs
     H2.register_alias('hydrogen')
     watergas_shift = bst.Rxn(
@@ -80,6 +79,7 @@ def create_hydrogen_fermentation_system(
         X=1, correct_atomic_balance=True
     ) 
     rxn = bst.SeriesReaction([watergas_shift, production, growth])
+    media = bst.Stream()
     bioreactor = bst.GasFedBioreactor(
         (100, 'bioreactor'),
         ins=[media, carbon_source, H2], 
@@ -105,8 +105,9 @@ def create_hydrogen_fermentation_system(
         gas = carbon_source.copy()
         rxn.force_reaction(gas)
         H2_demand = -gas.imol['H2']
-        H2.imol['H2'] = H2_demand * bioreactor.H2_CO2_ratio
+        H2.imol['H2'] = H2_demand * bioreactor.H2_ratio
         rxn.X[1] = bioreactor.specific_yield
+        
         bioreactor.run()
         error = bioreactor.atomic_balance_error()
         assert sum(error.values()) < 1e-3
