@@ -6,17 +6,102 @@ Created on Thu Sep 14 11:35:44 2023
 """
 import biosteam as bst
 from biosteam.units.decorators import cost
-import math
+from biosteam.units.design_tools.Gibbs_equilibrium_reaction import minimize_Gibbs_free_energy
 
 __all__ = (
+    # H2 + CO2 -> CO + H2O
+    'ReverseWaterGasShiftReactor',
+    # Carbon capture
     'CarbonCaptureCost',
     'MembraneSeparation',
     'CryogenicDistillation',
-    'SolarPV',
-    'WindTurbine',
-    'Electrolyzer',
 )
 
+# %% H2 + CO2 -> CO + H2O
+
+# TODO: Use detailed kinetic modeling, design, and cost correlations from paper
+# https://www-sciencedirect-com.libproxy1.nus.edu.sg/science/article/pii/S0016236122003064
+
+@cost('Feed flow rate', S=72.05e3, cost=5.2e6 * 1.12, CE=608, BM=3.02, n=0.6)
+class ReverseWaterGasShiftReactor(bst.Unit):
+    # https://www-sciencedirect-com.libproxy1.nus.edu.sg/science/article/pii/S0016236122003064
+    _units = {'Feed flow rate': 'kg/hr'}
+    _ins_size_is_fixed = False
+    _outs_size_is_fixed = False
+    _N_ins = 2
+    _N_outs = 2
+    auxiliary_unit_names = ('mixer', 'preheater', 'condenser')
+    
+    def _init(self):
+        self.T = 800 + 273.15
+        self.P = 5 * 101325
+        self.reaction = bst.Reaction('CO2 + H2 -> CO + H2O', 'CO2', X=1)
+        self.auxiliary('mixer', bst.Mixer, ins=(0-self, 1-self))
+        self.auxiliary('preheater', bst.HXutility, ins=self.mixer-0, outs='', T=529.2 - 10) # TODO: Make this 400 degC, but use bagasse to avoid natural gas 
+        self.auxiliary('valve', bst.IsenthalpicValve, P=2*101325)
+        self.auxiliary('condenser', bst.Flash, ins=self.valve-0, outs=[self-0, self-1], T=273.15 + 37, P=2*101325)
+    
+    def _run(self):
+        ins = self.ins
+        if len(ins) == 3:
+            CO2, H2, utility = self.ins
+            self.external_utility = True
+        else:
+            CO2, H2, = self.ins
+            self.external_utility = False
+        F_H2 = CO2.imol['CO2'] - CO2.imol['H2']
+        if F_H2 < 0: F_H2 = 0
+        H2.imol['H2'] = F_H2 
+        self.mixer.run()
+        self.preheater.run()
+        reactor_feed = self.preheater-0
+        reactor_product = 0-self.valve
+        reactor_product.copy_like(reactor_feed)
+        reactor_product.T = self.T
+        reactor_product.P = self.P
+        minimize_Gibbs_free_energy(
+            reactor_product, ('CO2', 'CO', 'H2', 'H2O'), 
+            method='COBYLA', 
+        )
+        self.valve.run()
+        self.condenser.run()
+        if self.external_utility:
+            _, _, emissions, remaining_utility = self.outs  
+            self._furnace_heat_utility = hu = bst.HeatUtility()
+            duty = (
+                reactor_product.H + reactor_product.Hf
+                - reactor_feed.H - reactor_feed.Hf
+            )
+            hu(duty, self.T, agent=utility.to_agent())
+            remaining_utility.copy_like(utility)
+            remaining_utility.mol -= hu.inlet_utility_stream.mol
+            emissions.copy_like(hu.outlet_utility_stream)
+        
+    def _design(self):
+        self.design_results['Feed flow rate'] = sum([i.imass['CO2', 'H2'].sum() for i in self.ins])
+        if self.external_utility:
+            self.heat_utilities.append(self._furnace_heat_utility)
+        else:
+            reactor_feed = self.preheater-0
+            reactor_product = 0-self.condenser
+            duty = (
+                reactor_product.H + reactor_product.Hf
+                - reactor_feed.H - reactor_feed.Hf
+            )
+            self.add_heat_utility(duty, self.T)
+        for i in self.auxiliary_units: i.simulate(run=False)
+
+def test_reverse_water_gas_shift_reactor():
+    bst.settings.set_thermo(['CO2', 'CO', 'H2', 'H2O'])
+    RWGSH = ReverseWaterGasShiftReactor(
+        ins=[bst.Stream('CO2', CO2=50, phase='g'),
+             bst.Stream('H2', H2=50, phase='g')]
+    )
+    RWGSH.simulate()
+    RWGSH.show()
+    print(RWGSH.results())
+    
+        
 # %% H2 recycling
 
 @cost('H2 flow rate', S=32.52, cost=38.21e6, CE=596.2, n=0.6, kW=2.53 * 3600)
@@ -91,141 +176,5 @@ class CarbonCaptureCost(bst.Facility):
         z_CO2 = F_CO2 / (other.F_mass + F_CO2)
         self.USD_per_MT = self.m * z_CO2 + self.b
 
-
-# %% H2 production (not working yet)
-
-class SolarPV(bst.Unit):
-    """ 
-    Create a Solar PV object that models the power production.
-    
-    
-    Parameters
-    ----------
-    ins:
-        G_pv: Solar irradiance, kW/m2
-    outs:
-        P_pv Power production, kW
-        
-    N_pv : number of photovoltaic modules, float
-    A_pv : area of the PV module, m2
-    efficiency_pv : PV system efficiency, float
-    G_pv : solar insolation, kW/m2
-    """
-    
-
-    _N_outs = 1
-    _units = {'Energy': 'kW'}
-    
-    
-    def __init__(self, ID='', ins=None, outs = (), thermo=None, *, G_pv, N_pv, A_pv, efficiency_pv):
-        bst.Unit.__init__(self, ID, ins, outs, thermo)
-        self.G_pv = G_pv 
-        self.N_pv = N_pv
-        self.A_pv = A_pv
-        self.efficiency_pv = efficiency_pv
-        
-    def _run(self):
-        P_pv = self.outs
-        
-        
-    def _design(self):
-        design_results = self.design_results
-        P_pv = self.N_pv * self.A_pv * self.efficiency_pv * self.G_pv
-        # design_results['SolarPanels']= N_pv
-
-        
-    def _cost(self):
-        design_results = self. design_results
-        Number_pv = design_results['SolarPanels']
-        purchase_cost = self.purchase_cost
-        # purchase_cost['Solar Panels']= N_pv
-        
-        
-class WindTurbine(bst.Unit):
-    """ 
-    Create a wind turbine that models power production.
-    
-    
-    Parameters
-    ----------
-    ins:
-        v: Wind speed, m/s
-    outs:
-        Pwind: Output power, kW
-        
-    P_rwt: rated power of wind turbine, kW
-    v: wind speed of wind turbine, m/s
-    v_ci: cut-in wind speed, m/s
-    v_co: cut-out wind speed, m/s
-    v_r: rated speed, m/s
-    """    
-    
-    _N_outs = 1
-    _units = {'Energy': 'kW'}
-    
-    
-    # def __init__(self, ID='', ins=0, outs =Pwind, *,v, P_rwt, v_ci, v_co, v_r):
-    #     bst.Unit.__init__(self, ID,  ins, outs, v=v, P_rwt=P__rwt, v_ci=v_ci, v_co=v_co, v_r=v_r)
-        
-    def _run(self):
-        Pwind = self.outs
-        
-        
-    def _desing(self):
-        design_results = self.design_results
-        
-        if self.v_ci <= self.v <= self.v_r:
-            Pwind = (math.pow(self.v,3) - math.pow(self.v_co,3))/(math.pow(self.v_r,3) - math.pow(self.v_co,3))*self.P_rwt
-        elif self.v_r <= self.v <= self.v_co:
-            Pwind = self.P_rwt
-        else:  
-            Pwind = 0
-        N_wind = design_results['Number of turbines']    
-        design_results['Power per Turbine'] = Pwind * N_wind
-        
-            
-    def _cost(self):
-        design_results = self. design_results
-        N_wind = design_results['Number of turbines']
-        purchase_cost = self.purchase_cost
-        # purchase_cost['Turbines']= N_pv
-
-
-class Electrolyzer(bst.Unit):
-    """ 
-    Create a Electrolyzer system object that models the hydrogen production.
-      
-    Parameters
-    ----------
-    ins:
-        F_water_el: feed water to the electrolyzer 
-    outs:
-        [0] F_hydrogen: Hydrogen produced in the electrolyzer
-        [1] F_oxygen: Oxygen produced in the electrolyzer
-        
-    P_elec_in: Electric power delivered from renewable energy to the EL,    
-    efficiency_el: Efficiency of the electrolyzer
-    
-
-    """  
-    _N_ins = 2
-    _N_outs = 2
-
-    
-    def __init__(self, ID='', ins=None, outs=(), thermo=None):
-        bst.Unit.__init__(self, ins, outs, thermo=None)
- 
-    
-        
-    def _run(self):
-       P_elec_in = self.ins[0] 
-       F_water_el = self.ins[1] 
-       F_hydrogen, F_oxygen = self.outs
-        
-        
-    def _design():
-        pass
-        # F_hydrogen = self.P_elec_in * eta
-        # F_oxygen = self.P_elec_in * eta    
-        
-
+if __name__ == '__main__':
+    test_reverse_water_gas_shift_reactor()

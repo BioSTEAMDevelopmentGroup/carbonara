@@ -18,6 +18,7 @@ characterization_factors = {
     'Natural gas': 0.33, # Natural gas from shell conventional recovery, GREET; includes non-biogenic emissions
     'Ethyl acetate': 4.2677, # [kg*CO2*eq / kg] From GREET 2022; Ethyl acetate production pathway
     'Hexane': 0.55002, # [kg*CO2*eq / kg] Ecoinvent 3.6 Cut off; IPCC 2013; Global market for hexane
+    'Electricity': 0.36, # [kg*CO2*eq / kWhr] From GREET; NG-Fired Simple-Cycle Gas Turbine CHP Plant
 }
 
 def load_process_settings():
@@ -33,17 +34,17 @@ def load_process_settings():
     cw = settings.get_cooling_agent("cooling_water")
     cw.set_property('T', 70, 'degF') # https://www.sciencedirect.com/topics/earth-and-planetary-sciences/cooling-tower
     hps = settings.get_heating_agent("high_pressure_steam")
-    hps.heat_transfer_efficiency = 0.85
+    hps.heat_transfer_efficiency = 1.0
     # hps.regeneration_price = 0.08064
     hps.T = 529.2
     hps.P = 44e5
     mps = settings.get_heating_agent("medium_pressure_steam")
-    mps.heat_transfer_efficiency = 0.90
+    mps.heat_transfer_efficiency = 1.0
     # mps.regeneration_price = 0.07974
     mps.T = 480.3
     mps.P = 18e5
     lps = settings.get_heating_agent("low_pressure_steam")
-    lps.heat_transfer_efficiency = 0.95
+    lps.heat_transfer_efficiency = 1.0
     # lps.regeneration_price = 0.06768
     lps.T = 428.6
     lps.P = 55e4

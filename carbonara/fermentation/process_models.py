@@ -20,6 +20,17 @@ __all__ = (
     'EthanolProductionProcess',
 )
 
+# Inconsisted energy balance allows for consistent VLE at reboiler/condenser 
+# stages and enables HXN on reboilers
+bst.Distillation.use_overall_energy_balance = False 
+
+# # Carbon credit equivalent to RIN
+# GWP_cornstover = 0.297 # kg / L
+# ethanol_energy = 0.67 # % gasoline
+# GWP_gasoline = 2.31 # kg / L 
+# GWP_reduction = GWP_gasoline * ethanol_energy - GWP_cornstover # kg-CO2e / L-ethanol
+# carbon_credit = dist.mean_RIN_D3_price / GWP_reduction # USD / kg-CO2
+
 # DO NOT DELETE:
 # natural_gas = bst.Chemical('CH4')
 # natural_gas.phase = 'g'
@@ -32,19 +43,19 @@ __all__ = (
 V_ng = 1.473318463076884 # Natural gas volume at 60 F and 14.73 psi [m3 / kg]
 results_folder = os.path.join(os.path.dirname(__file__), 'results')
 
-price_data = {
-    'Ethanol': {},
-    'BFG': {}, # Blast Furnace Gas (flue gas from steelmaking)
-    'RFG': {}, # Refinery Flue Gas
-    'sugarcane': {},
-}
 L_per_gal = 3.7854
 ethanol_kg_per_gal = 2.98668849
 ethanol_gal_per_kg = 1. / ethanol_kg_per_gal
 ethanol_L_per_kg = ethanol_gal_per_kg * L_per_gal
 
-# Key scenarios (4 total)
-# [BFG vs RFG vs sugarcane CO2 vs. sugarcane sugars] -> EtOH (4)
+# Blast furnace production
+BFG_to_pig_iron = np.array([2, 3]) # by wt
+pig_iron_produciton = np.array([3, 10]) # MTPA -> Million ton per annual
+BFG_flared = np.array([3, 5]) # %
+BFG_available = tuple(BFG_to_pig_iron * pig_iron_produciton * BFG_flared / 100) # [0.18, 1.5] 10^6 MT / yr
+
+# Key scenarios (3 total)
+# [BFG vs sugarcane CO2 vs. sugarcane sugars] -> EtOH (4)
 
 # Key assumptions
 # Electricity - assume renewable
@@ -181,6 +192,7 @@ class EthanolProductionProcess(bst.ProcessModel):
     def create_thermo(self):
         chemicals = create_chemicals()
         thermo = bst.Thermo(chemicals)
+        chemicals.define_group('Cellmass', ['Yeast', 'Bacteria'])
         match self.scenario.feedstock:
             case 'BFG':
                 # Composition
@@ -201,8 +213,8 @@ class EthanolProductionProcess(bst.ProcessModel):
                     Ash=0.006,
                     Cellulose=0.06115,
                     Hemicellulose=0.03608,
-                    Lignin=0.03276,
-                    Solids=0.015,
+                    Lignin=0.03276 + 0.015, # Treat waxes solids as lignin
+                    # Solids=,
                 )
                 components, flows = zip(*sugarcane.items())
                 chemicals.define_group(
@@ -210,11 +222,11 @@ class EthanolProductionProcess(bst.ProcessModel):
                 )    
         chemicals.define_group( # Assume Miscanthus is a good representative biomass
             'Biomass', 
-            ['Water', 'Solids', 
+            ['Water', # 'Solids', # treat solids as lignin
              'Ash', 'Lignin', 
              'Cellulose', 'Hemicellulose'],
-            [0.2, 0.04023529411764703, 
-             0.015647058823529406, 0.1616, 
+            [0.2, 
+             0.015647058823529406, 0.1616 + 0.04023529411764703, 
              0.3592, 0.22331764705882354],
             wt=True,
         )
@@ -225,10 +237,10 @@ class EthanolProductionProcess(bst.ProcessModel):
         load_process_settings()
         match scenario.name:
             case 'BFG/H2':
-                feedstock = bst.Stream(BFG=100, phase='g')
-                system = systems.create_fluegas_hydrogen_ethanol_system(ins=feedstock)
+                feedstock = bst.Stream(BFG=100, phase='g', P=101325e1)
+                system = systems.create_fluegas_hydrogen_ethanol_system(ins=feedstock, fuel_source='BFG')
             case 'RFG/H2':
-                feedstock = bst.Stream(RFG=100, phase='g')
+                feedstock = bst.Stream(RFG=100, phase='g', P=101325e1)
                 system = systems.create_fluegas_hydrogen_ethanol_system(ins=feedstock)
             case 'sugarcane':
                 system = systems.create_sugarcane_ethanol_system()
@@ -239,7 +251,7 @@ class EthanolProductionProcess(bst.ProcessModel):
                 
         self.tea = create_tea(system)
         system.set_tolerance(
-            rmol=1e-4, mol=1e-3, maxiter=50, 
+            rmol=1e-4, mol=1e-3, maxiter=100, 
             method='wegstein', subsystems=True
         )
         return system
@@ -260,78 +272,85 @@ class EthanolProductionProcess(bst.ProcessModel):
             ub = 1.20*baseline
             return parameter(*args, bounds=(lb, ub), baseline=baseline, distribution='uniform')
         
-        @parameter(units='USD/kg', element=scenario.feedstock,
-                   **price_data[scenario.feedstock]) 
-        def set_feedstock_price(price): 
-            self.feedstock.price = price
+        self.ethanol.price = dist.mean_ethanol_no_RIN_price * ethanol_L_per_kg
+        
+        # @parameter(units='USD/kg', element=scenario.feedstock,
+        #            **price_data[scenario.feedstock]) 
+        # def set_feedstock_price(price): 
+        #     self.feedstock.price = price
         
         # USDA ERS historical price data without EPA RIN prices
         @parameter(distribution=dist.ethanol_no_RIN_price_distribution, element='Ethanol', 
                    baseline=dist.mean_ethanol_no_RIN_price, units='USD/L')
         def set_ethanol_price(price): # Triangular distribution fitted over the past 10 years Sep 2009 to Nov 2020
             self.ethanol.price = price * ethanol_L_per_kg
+        
+        # Set a consistent carbon credit instead of RINs
+        # The range is 100 (commonly cited as cost of carbon capture)
+        # to 500 (equivalent to value of RIN D3) USD / MT-CO2.
+        # This value is added as a credit after LCA (and before TEA).
+        @parameter(bounds=(100, 500), distribution='uniform', element='Ethanol', 
+                   baseline=310, units='USD/MT-CO2e')
+        def set_carbon_credit(carbon_credit): # Triangular distribution fitted over the past 10 years Sep 2009 to Nov 2020
+            self.carbon_credit = carbon_credit
 
-        # USDA ERS historical price data without EPA RIN prices
-        @parameter(distribution=dist.RIN_D3_price_distribution, element='RIN D3', 
-                   baseline=dist.mean_RIN_D3_price, units='USD/RIN')
-        def set_RIN_D3_price(price): # Triangular distribution fitted over the past 10 years Sep 2009 to Nov 2020
-            bst.settings.register_credit('Ethanol RIN D3', price * ethanol_L_per_kg)
-        set_RIN_D3_price(dist.mean_RIN_D3_price)
+        # # USDA ERS historical price data without EPA RIN prices
+        # @parameter(distribution=dist.RIN_D3_price_distribution, element='RIN D3', 
+        #            baseline=dist.mean_RIN_D3_price, units='USD/RIN')
+        # def set_RIN_D3_price(price): # Triangular distribution fitted over the past 10 years Sep 2009 to Nov 2020
+        #     bst.settings.register_credit('Ethanol RIN D3', price * ethanol_L_per_kg)
+        # set_RIN_D3_price(dist.mean_RIN_D3_price)
         
-        # USDA ERS historical price data
-        @parameter(distribution=dist.RIN_D5_price_distribution, 
-                   element='RIN D5', units='USD/RIN',
-                   baseline=dist.mean_RIN_D5_price)
-        def set_RIN_D5_price(price): # Triangular distribution fitted over the past 10 years Sep 2009 to March 2021
-            bst.settings.register_credit('Ethanol RIN D5', price * ethanol_L_per_kg)
-        set_RIN_D5_price(dist.mean_RIN_D5_price)
+        # # # USDA ERS historical price data
+        # @parameter(distribution=dist.RIN_D5_price_distribution, 
+        #            element='RIN D5', units='USD/RIN',
+        #            baseline=dist.mean_RIN_D5_price)
+        # def set_RIN_D5_price(price): # Triangular distribution fitted over the past 10 years Sep 2009 to March 2021
+        #     bst.settings.register_credit('Ethanol RIN D5', price * ethanol_L_per_kg)
+        # set_RIN_D5_price(dist.mean_RIN_D5_price)
         
-        if scenario.feedstock == 'sugarcane':
-            if scenario.hydrogen:
-                def RIN_D3_fraction():
-                    D5 = self.gas_fed_bioreactor.outs[1].imass['Ethanol']
-                    D3 = self.bioreactor.outs[1].imass['Ethanol']
-                    return D3 / (D3 + D5)
+        # if scenario.feedstock == 'sugarcane':
+        #     if scenario.hydrogen:
+        #         def RIN_D3_fraction():
+        #             D3 = self.gas_fed_bioreactor.outs[1].imass['Ethanol']
+        #             D5 = self.bioreactor.outs[1].imass['Ethanol']
+        #             return D3 / (D3 + D5)
                 
-                self.ethanol_storage.define_credit(
-                    'Ethanol RIN D3', self.ethanol_storage.outs[0], 
-                    RIN_D3_fraction,
-                )
-                self.ethanol_storage.define_credit(
-                   'Ethanol RIN D5', self.ethanol_storage.outs[0], 
-                   lambda: 1 - RIN_D3_fraction(),
-                )
-            else:
-                self.ethanol_storage.define_credit(
-                    'Ethanol RIN D3', self.ethanol_storage.outs[0], 
-                )
-        elif scenario.hydrogen:
-            self.ethanol_storage.define_credit(
-               'Ethanol RIN D5', self.ethanol_storage.outs[0], 
-            )
+        #         self.ethanol_storage.define_credit(
+        #             'Ethanol RIN D3', self.ethanol_storage.outs[0], 
+        #             RIN_D3_fraction,
+        #         )
+        #         self.ethanol_storage.define_credit(
+        #            'Ethanol RIN D5', self.ethanol_storage.outs[0], 
+        #            lambda: 1 - RIN_D3_fraction(),
+        #         )
+        #     else:
+        #         self.ethanol_storage.define_credit(
+        #             'Ethanol RIN D5', self.ethanol_storage.outs[0], 
+        #         )
+        # elif scenario.hydrogen:
+        #     self.ethanol_storage.define_credit(
+        #        'Ethanol RIN D3', self.ethanol_storage.outs[0], 
+        #     )
         
-        # [kg*CO2*eq / kg] From GREET 2023; Miscanthus for ethanol production
-        self.BT.fuel.set_CF('GWP', CFs['Miscanthus']) 
-        
-        price_ub = 59 / 907.185 * 0.8 # https://www.sciencedirect.com/science/article/pii/S096195340700205X
-        price_lb = 61.98 / 907.185 * 0.8 # https://farmdoc.illinois.edu/fast-tools/biomass-crop-budget-tool-miscanthus-and-switchgrass
-        self.BT.fuel.price = price_baseline = 0.5 * (price_lb + price_ub)
-        
-        @parameter(units='USD/MT', element='biomass', 
-                   bounds=[price_lb * 1000, price_ub * 1000], 
-                   baseline=price_baseline * 1000)
-        def set_biomass_price(price):
-            self.BT.fuel.price = price / 1000
+        # https://www.ipcc-nggip.iges.or.jp/public/2019rf/pdf/3_Volume3/19R_V3_Ch04_Metal_Industry.pdf
+        # 5% of BFG is left unused at a steelmill. We can use this as both 
+        # feedstock and fuel. We will need solve for the split and then resimulate.
         
         @parameter(distribution=dist.electricity_price_distribution, units='USD/kWh',
                    element='electricity', baseline=dist.mean_electricity_price)
         def set_electricity_price(price): 
             bst.settings.electricity_price = price
         
+        bst.settings.set_electricity_CF(GWPkey, CFs['Electricity'])
+        
         if scenario.hydrogen:
-            # https://www.frontiersin.org/journals/bioengineering-and-biotechnology/articles/10.3389/fbioe.2020.00204/pdf
+            # [10 g/L] https://www.frontiersin.org/journals/bioengineering-and-biotechnology/articles/10.3389/fbioe.2020.00204/pdf
+            # https://www.sciencedirect.com/science/article/abs/pii/S095816691100019X?via%3Dihub
+            # [41 g/L] https://www.sciencedirect.com/science/article/abs/pii/S096085242500118X
+            # [50 g/L target in Lanza Tech patent] https://patents.google.com/patent/US20160115505A1/en
             @parameter(units='g/L', element='Gas-fed bioreactor',
-                       bounds=(10, 30))
+                       bounds=(10, 50), baseline=41)
             def set_gas_fed_bioreactor_titer(titer):            
                 self.gas_fed_bioreactor.titer[product] = titer
             
@@ -365,17 +384,31 @@ class EthanolProductionProcess(bst.ProcessModel):
             # https://www.hydrogen.energy.gov/docs/hydrogenprogramlibraries/pdfs/20004-cost-electrolytic-hydrogen-production.pdf?Status=Master
             # Actual cost of hydrogen between 4-6 USD/kg according to DOE
             @parameter(units='USD/kg', element='H2', bounds=[2, 6],
-                       baseline=3, distribution='uniform') # Natural gas 1.5 - 5; Electrolysis 3 - 7
+                       baseline=2, distribution='uniform') # Natural gas 1.5 - 5; Electrolysis 3 - 7
             def set_H2_price(price):
                 self.hydrogen.price = price
                 
             self.hydrogen.set_CF(GWPkey, CFs['H2'])
-            
-        # https://pmc.ncbi.nlm.nih.gov/articles/PMC3947793/
-        # https://www.capturemap.no/the-biogenic-co2-breakdown/
-        self.BT.CO2_emissions_concentration = 15.0 / 100
         
         if scenario.feedstock == 'sugarcane':
+            # [kg*CO2*eq / kg] From GREET 2023; Miscanthus for ethanol production
+            self.BT.fuel.set_CF('GWP', CFs['Miscanthus']) 
+            
+            price_ub = 59 / 907.185 * 0.8 # https://www.sciencedirect.com/science/article/pii/S096195340700205X
+            price_lb = 61.98 / 907.185 * 0.8 # https://farmdoc.illinois.edu/fast-tools/biomass-crop-budget-tool-miscanthus-and-switchgrass
+            # self.BT.fuel.price = price_baseline = 0.5 * (price_lb + price_ub)
+            self.BT.fuel.price = price_baseline = 0.052
+            
+            @parameter(units='USD/MT', element='biomass', 
+                       bounds=[price_lb * 1000, price_ub * 1000], 
+                       baseline=price_baseline * 1000)
+            def set_biomass_price(price):
+                self.BT.fuel.price = price / 1000
+            
+            # https://pmc.ncbi.nlm.nih.gov/articles/PMC3947793/
+            # https://www.capturemap.no/the-biogenic-co2-breakdown/
+            self.BT.CO2_emissions_concentration = 15.0 / 100
+            
             # TODO: Use agricultural data
             baseline = self.baseline_dry_sugarcane_yield                
             @parameter(
@@ -404,62 +437,90 @@ class EthanolProductionProcess(bst.ProcessModel):
             def set_baseline_feedstock_price(price):
                 self.baseline_sugarcane_price = price
                 
-        else: # Must be flue gas
-            sugarcane_ethanol_yield = 88.6547560538855 # L/MT
-            annual_crushing_capacity = 480000.0 # MT / yr
-            baseline = sugarcane_ethanol_yield * annual_crushing_capacity / 1e6
-            @default(baseline, units='10^6 L/yr', element=product)
-            def set_ethanol_production_capacity(production_capacity):
-                self.gas_fed_bioreactor.update_theoretical_yield()
-                carbon_source = self.feedstock.copy()
-                self.gas_fed_bioreactor.funneling_reactions.force_reaction(carbon_source)
-                self.gas_fed_bioreactor.reactions.force_reaction(carbon_source)
-                ethanol = carbon_source.imass[product] * self.tea.operating_hours * ethanol_L_per_kg / 1e6
-                self.system.rescale(self.feedstock, production_capacity / ethanol)
-                
+        elif scenario.feedstock == 'BFG':
+            # Do not use biomass, use "free" Syn-gas  
+            self.BT.fuel.price = 0
+            bst.stream_prices['Fuel'] = 0
+            
             # https://ifactoryapp.com/industries/steel-plant/steel-plant-annual-shutdown-planning-turnaround-management
-            @parameter(bounds=(340, 360), units='day/y', baseline=150, kind='coupled')
+            @parameter(bounds=(340, 360), units='day/y', baseline=350, kind='coupled')
             def set_operating_days(operating_days):
                 self.tea.operating_days = operating_days
         
-        # chemicals = bst.settings.chemicals
-        # self.credited_carbon_intake = lambda: (
-        #     self.product.get_atomic_flow('C') * chemicals.CO2.MW * system.operating_hours
-        # )
-        # self.system.define_process_impact(
-        #     key=GWPkey,
-        #     name='Credited carbon intake',
-        #     basis='kg',
-        #     inventory=self.credited_carbon_intake,
-        #     CF=-1.,
-        # )
+            @parameter(bounds=BFG_available, units='10^6 MT/yr', baseline=BFG_available[1], element='BFG')
+            def set_BFG_processing_capacity(production_capacity):
+                current = self.feedstock.F_mass * self.tea.operating_hours / 1e9
+                self.system.rescale(self.feedstock, production_capacity / current)
+                
+                # Flue gas is fed to the boiler, split available flue gas accordingly
+                self.system.simulate()
+                processed = self.feedstock.F_mass
+                burned = self.BT.ins[3].F_mass
+                self.system.rescale(self.feedstock, processed / (burned + processed))
+                
+            self.BT._decorated_cost = lambda: None # No CAPEX, it is paid for by the steelmill and is out-of-system-boundary 
+           
+        if scenario.hydrogen:
+            chemicals = bst.settings.chemicals
+            self.credited_carbon_intake = lambda: (
+                2 * self.gas_fed_bioreactor.outs[1].imol['Ethanol'] * chemicals.CO2.MW * system.operating_hours
+            )
+            self.system.define_process_impact(
+                key=GWPkey,
+                name='Credited carbon intake',
+                basis='kg',
+                inventory=self.credited_carbon_intake,
+                CF=-1.,
+            )
+            
+        bst.settings.register_credit('Carbon credit', 0.4) # Arbitrary number
+        self.ethanol_storage.define_credit(
+            'Carbon credit', self.ethanol_storage.outs[0], 
+        )
         
-        @metric(units='USD/kg')
-        def MSP():
-            return self.tea.solve_price(self.ethanol)
-        
-        @metric(units='%')
-        def IRR():
-            return self.tea.solve_IRR()
-        
-        @metric(units='kg*CO2e/kg')
+        @metric(units='kg*CO2e/L')
         def carbon_intensity():
             return (
                 self.system.get_net_impact(GWPkey)
-                / self.system.get_mass_flow(self.ethanol)
+                / self.system.get_mass_flow(self.ethanol) / ethanol_L_per_kg
             )
+        
+        @metric(units='USD/L')
+        def ethanol_credit():
+            GWP_ethanol = carbon_intensity()
+            ethanol_energy = 0.67 # % gasoline
+            GWP_gasoline = 2.31 # kg / L 
+            GWP_reduction = GWP_gasoline * ethanol_energy - GWP_ethanol # kg-CO2e / L-ethanol
+            return self.carbon_credit / 1000 * GWP_reduction # USD / L-ethanol
+        
+        # GWP_cornstover = 0.297 # kg / L
+        # ethanol_energy = 0.67 # % gasoline
+        # GWP_gasoline = 2.31 # kg / L 
+        # GWP_reduction = GWP_gasoline * ethanol_energy - GWP_cornstover # kg-CO2e / L-ethanol
+        # carbon_credit = dist.mean_RIN_D3_price / GWP_reduction # USD / kg-CO2
+        
+        @metric(units='USD/L')
+        def MSP():
+            bst.settings.register_credit('Carbon credit', ethanol_credit() * ethanol_L_per_kg)
+            self.ethanol_storage.simulate() # Update credits
+            return self.tea.solve_price(self.ethanol) / ethanol_L_per_kg
+        
+        # @metric(units='%')
+        # def IRR():
+        #     return 100 * self.tea.solve_IRR()
         
         @metric(units='10^6 USD')
         def TCI():
             return self.tea.TCI / 1e6
         
-        @metric(units='10^3 MT/yr')
-        def biomass_burned(): # 825 MT / yr in NREL's cornstover model
-            return self.boiler.fuel.F_mass * self.system.operating_hours / 1e6
+        @metric(units='10^6 MT/yr')
+        def fuel_burned(): 
+            return self.BT.fuel.F_mass * self.system.operating_hours / 1e9
         
-        @metric(units='10^3 MT/yr')
-        def hydrogen_consumption(): 
-            return self.hydrogen.F_mass * self.system.operating_hours / 1e6
+        if scenario.hydrogen:
+            @metric(units='10^6 MT/yr')
+            def hydrogen_consumption(): 
+                return self.hydrogen.F_mass * self.system.operating_hours / 1e9
         
         @metric(units='kWh/kg-H2')
         def electricity_demand(): 

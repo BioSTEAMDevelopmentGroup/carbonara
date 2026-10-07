@@ -7,7 +7,7 @@ Created on Wed Sep 30 23:34:44 2026
 
 import numpy as np
 fluegas_to_hotmetal = 2.5 # https://www.epa.gov/sites/production/files/2020-11/documents/c12s05.pdf
-hot_metal = np.array([50000, 3e6]) * 0.5 # https://en.wikipedia.org/wiki/Steel_mill
+hot_metal = np.array([50000, 3e6]) * 0.05 # https://en.wikipedia.org/wiki/Steel_mill
 fluegas_availability = fluegas_to_hotmetal * hot_metal # MT / yr
 import biosteam as bst
 gases = ('CO', 'CO2', 'H2', 'N2')

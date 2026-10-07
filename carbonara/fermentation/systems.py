@@ -4,6 +4,7 @@
 import biosteam as bst
 from biorefineries import cane
 from biorefineries.ethanol import create_ethanol_purification_system
+from . import units
 
 __all__ = (
     'create_hydrogen_dilute_ethanol_system',
@@ -79,16 +80,21 @@ def create_sugarcane_ethanol_system(ins, outs):
     outs=['vent', 'beer'],
 )
 def create_hydrogen_dilute_ethanol_system(
-        ins, outs, 
+        ins, outs, syngas=True
     ):
     carbon_source, H2, = ins
     vent, beer = outs
     media = bst.Stream(Water=1000, T=298.15)
     H2.register_alias('hydrogen')
-    watergas_shift = bst.Rxn(
-        'CO + H2O -> CO2 + H2',
-        reactant='CO', correct_atomic_balance=True, X=1
-    )
+    if syngas:
+        watergas_shift = bst.Rxn(
+            'CO + H2O -> CO2 + H2',
+            reactant='CO', correct_atomic_balance=True, X=1
+        )
+        gas_substrates = ('H2', 'CO2', 'CO')
+    else:
+        watergas_shift = None
+        gas_substrates = ('H2', 'CO2')
     production = bst.Rxn(
         'H2 + CO2 -> Ethanol + H2O',
         reactant='CO2', correct_atomic_balance=True, X=1
@@ -103,8 +109,8 @@ def create_hydrogen_dilute_ethanol_system(
         outs=(vent, 'effluent'), 
         tau=100, 
         funneling_reactions=watergas_shift,
-        reactions=bst.SeriesReaction([production, growth]), 
-        gas_substrates=('H2', 'CO2', 'CO'),
+        reactions=bst.ReactionSystem(production, growth), 
+        gas_substrates=gas_substrates,
         titer={'Ethanol': 20},
         batch=False,
         length_to_diameter=12,
@@ -118,6 +124,7 @@ def create_hydrogen_dilute_ethanol_system(
     for i in gas_fed_bioreactor.gas_coolers: i.cool_only = True
     gas_fed_bioreactor.productivity = 1 # g / L / h
     gas_fed_bioreactor.specific_yield = 20 # g-product / g-biomass
+    gas_fed_bioreactor.kLa_correction_factor = 2 # 2 - 4 times as much https://www.sciencedirect.com/science/article/pii/S1369703X22001747
     
     # Stoichiometric molar production per mol CO2
     EtOH_per_CO2 = (
@@ -158,27 +165,29 @@ def create_hydrogen_dilute_ethanol_system(
     
 @bst.SystemFactory(
     ID='fluegas_hydrogen_ethanol_sys',
-    ins=[dict(ID='carbon_source', phase='g'), 
+    ins=[dict(ID='carbon_source', phase='g', P=101325e1), 
          dict(ID='hydrogen', H2=100, P=101325e1, price=2, phase='g')],
-    outs=['ethanol', 'purge'],
+    outs=['ethanol',],
 )
 def create_fluegas_hydrogen_ethanol_system(
-        ins, outs, 
+        ins, outs, fuel_source=None,
     ):
     carbon_source, hydrogen = ins
-    ethanol, purge = outs
-    vent = bst.Stream(phase='g')
-    recycled_vent = bst.Stream(phase='g')
-    bst.Splitter(
-        (100, 'vent_splitter'),
-        ins=vent, outs=[recycled_vent, purge], split=0.9
-    )
-    vent_mixer = bst.Mixer(
-        (100, 'vent_recirculation_mixer'),
-        ins=[carbon_source, recycled_vent],
-    )
+    ethanol, = outs
+    if fuel_source is None: fuel_source = 'Biomass'
+    # ethanol, purge = outs
+    # vent = bst.Stream(phase='g')
+    # recycled_vent = bst.Stream(phase='g')
+    # bst.Splitter(
+    #     (100, 'vent_splitter'),
+    #     ins=vent, outs=[recycled_vent, purge], split=0.9
+    # )
+    # vent_mixer = bst.Mixer(
+    #     (100, 'vent_recirculation_mixer'),
+    #     ins=[carbon_source, recycled_vent],
+    # )
     H2_to_EtOH_sys, udct = create_hydrogen_dilute_ethanol_system(
-        ins=[vent_mixer-0, hydrogen], 
+        ins=[carbon_source, hydrogen], 
         outs=['vent', 'beer'],
         area=100, udct=True
     )
@@ -188,7 +197,7 @@ def create_fluegas_hydrogen_ethanol_system(
     vent_scrubber = bst.VentScrubber(
         (100, 'vent_scrubber'), 
         ins=(stripping_water, gas_fed_bioreactor-0), 
-        outs=(vent, ''),
+        outs=('vent', ''),
         titer=('Ethanol', 5), # g / L 
     )
     dilute_ethanol_mixer = bst.Mixer(
@@ -203,7 +212,7 @@ def create_fluegas_hydrogen_ethanol_system(
     bst.create_all_facilities(
         WWT_kwargs=dict(kind="high-rate", area=300), 
         HXN_kwargs=dict(force_ideal_thermo=True, cache_network=True),
-        CHP_kwargs=dict(fuel_source='Biomass'),
+        CHP_kwargs=dict(fuel_source=fuel_source, combustible_gases=[vent_scrubber-0]),
     )
     
 @bst.SystemFactory(
@@ -218,18 +227,41 @@ def create_sugarcane_hydrogen_ethanol_system(
     sugarcane, hydrogen = ins
     ethanol, = outs
     sugarcane_sys = create_sugarcane_dilute_ethanol_system(
-        ins=sugarcane, scrubber=True
+        ins=sugarcane, scrubber=False, 
     )
     bioreactor_vent, beer, bagasse, fiber_fines = sugarcane_sys.outs
+    H2_distributor = bst.Distributor(ins=hydrogen, outs=('', ''))
+    for i in H2_distributor.outs: i.imol['H2'] = 100 # Initialize composition for reactors
     recycled_vent = bst.Stream(phase='g')
     vent_mixer = bst.Mixer(
-        (300, 'vent_recirculation_mixer'),
+        (300, 'vent_mixer'),
         ins=[bioreactor_vent, recycled_vent],
     )
+    stripping_water = bst.Stream()
+    vent_scrubber = bst.VentScrubber(
+        (100, 'vent_scrubber'), 
+        ins=(stripping_water, vent_mixer-0), 
+        outs=('vent', ''),
+        titer=('Ethanol', 8), # g / L 
+    )
+    dehumidifier = bst.Splitter(ins=vent_scrubber-0, split=dict(Water=1))
+    excess_splitter = bst.Splitter(ins=dehumidifier-1, outs=('', 'purge_to_boiler'), split=0.5)
+    @excess_splitter.add_specification(run=True)
+    def purge():
+        feed, = excess_splitter.ins
+        fresh_feed = bioreactor_vent.imol['CO2']
+        total = feed.imol['CO2', 'H2', 'CO'].sum()
+        excess_splitter.split[:] = min(2 * fresh_feed / total, 1) if total else 1
+        
+    RWGSR = units.ReverseWaterGasShiftReactor(
+        ins=[excess_splitter-0, H2_distributor-0, bagasse],
+        outs=[''] * 4,
+    )
+    
     H2_to_EtOH_sys, udct = create_hydrogen_dilute_ethanol_system(
-        ins=[vent_mixer-0, hydrogen], 
+        ins=[RWGSR-0, H2_distributor-1], 
         outs=[recycled_vent, 'beer'],
-        area=300, udct=True
+        area=300, udct=True, syngas=True,
     )
     dilute_ethanol_mixer = bst.Mixer(
         400, ins=[beer, H2_to_EtOH_sys-1],
