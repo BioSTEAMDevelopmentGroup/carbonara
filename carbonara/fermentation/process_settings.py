@@ -29,8 +29,8 @@ def load_process_settings():
     #         i.ID, GWP, 0.2958e-3, 'kJ' # [kg*CO2*eq / kJ] From GREET 2020; Natural gas, on-site
     #     )
     settings.CEPCI = 816.0 # 2022
-    bst.settings.electricity_price = 0.060 # Maryland solar REC (renewable energy certificates) # https://escholarship.org/uc/item/80n4q8xc
-    bst.PowerUtility.set_CF('GWP', 0)
+    # bst.settings.electricity_price = 0.060 # Maryland solar REC (renewable energy certificates) # https://escholarship.org/uc/item/80n4q8xc
+    # bst.PowerUtility.set_CF('GWP', 0)
     cw = settings.get_cooling_agent("cooling_water")
     cw.set_property('T', 70, 'degF') # https://www.sciencedirect.com/topics/earth-and-planetary-sciences/cooling-tower
     hps = settings.get_heating_agent("high_pressure_steam")

@@ -72,7 +72,7 @@ class ReverseWaterGasShiftReactor(bst.Unit):
                 reactor_product.H + reactor_product.Hf
                 - reactor_feed.H - reactor_feed.Hf
             )
-            hu(duty, self.T, agent=utility.to_agent())
+            hu(duty, self.T, agent=utility.to_agent(isfuel=True))
             remaining_utility.copy_like(utility)
             remaining_utility.mol -= hu.inlet_utility_stream.mol
             emissions.copy_like(hu.outlet_utility_stream)
