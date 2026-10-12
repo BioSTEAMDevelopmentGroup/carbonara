@@ -25,12 +25,12 @@ __all__ = (
 # stages and enables HXN on reboilers
 bst.Distillation.use_overall_energy_balance = False 
 
-# # Carbon credit equivalent to RIN
-# GWP_cornstover = 0.297 # kg / L
-# ethanol_energy = 0.67 # % gasoline
-# GWP_gasoline = 2.31 # kg / L 
-# GWP_reduction = GWP_gasoline * ethanol_energy - GWP_cornstover # kg-CO2e / L-ethanol
-# carbon_credit = dist.mean_RIN_D3_price / GWP_reduction # USD / kg-CO2
+# # Carbon credit for sugarcane ethanol equivalent to RIN
+GWP_sugarcane = 0.27 # kg / L
+ethanol_energy = 0.67 # % gasoline
+GWP_gasoline = 2.31 # kg / L 
+GWP_reduction = GWP_gasoline * ethanol_energy - GWP_sugarcane # kg-CO2e / L-ethanol
+sugarcane_ethanol_carbon_credit = dist.mean_RIN_D5_price / GWP_reduction * 1000 # ~160 USD / kg-CO2
 
 # DO NOT DELETE:
 # natural_gas = bst.Chemical('CH4')
@@ -54,6 +54,11 @@ BFG_to_pig_iron = np.array([2, 3]) # by wt
 pig_iron_produciton = np.array([3, 10]) # MTPA -> Million ton per annual
 BFG_flared = np.array([3, 5]) # %
 BFG_available = tuple(BFG_to_pig_iron * pig_iron_produciton * BFG_flared / 100) # [0.18, 1.5] 10^6 MT / yr
+
+# FCC partial combustion flue gas availability
+# Source: quick gemini search assuming Singapore Jurong island and heuristing estimates for FCC.
+# TODO: improve this estimate and add detailed calculation.
+RFG_available = np.array([6.3, 10.5]) # 10^6 MT / yr
 
 # Key scenarios (3 total)
 # [BFG vs sugarcane CO2 vs. sugarcane sugars] -> EtOH (4)
@@ -84,7 +89,7 @@ BFG_available = tuple(BFG_to_pig_iron * pig_iron_produciton * BFG_flared / 100) 
 # Length to diameter
 # H2 flow rate (based on mass transfer)
 
-# Questions:
+# Questions (answers hypothetical for now):
 # 1. What bioproduct is best?
 # Answer -> Ethanol, at comparable performance and low H2 price (requires more reducing power).
 # Analysis -> Break-even hydrogen price vs titer under uncertainty, assuming constant low and high productivities.
@@ -102,6 +107,10 @@ BFG_available = tuple(BFG_to_pig_iron * pig_iron_produciton * BFG_flared / 100) 
 #    Carbon utilization is the more economical route with integration of 
 #    separation, heat, and power equipment at a biorefinery.
     
+# Uncertainty analysis plots:
+# Carbon mitigation cost vs. carbon intensity (economic vs environmental impact)
+# Carbon efficiency vs energy efficiency (scalability -> how efficient are we in using our carbon and energy resources)
+
 def _MSP_at_L2D(L2D, system, gas_fed_bioreactor, MSP):
     gas_fed_bioreactor.length_to_diameter = L2D
     system.simulate()
@@ -236,7 +245,13 @@ class EthanolProductionProcess(bst.ProcessModel):
                     'sugarcane', components, flows, wt=True
                 )
             case 'RFG':
-                raise NotImplementedError('feedstock RFG not available (yet)')
+                # Partial combustion at FCC for petroleum refining (like in Jurong Island)
+                rfg = bst.Stream(CO=8, CO2=10, N2=75, H2O=7, units='m3/hr', phase='g', thermo=thermo)
+                gases = ('CO', 'CO2', 'N2', 'H2O')
+                gas_flows = rfg.imass[gases] 
+                chemicals.define_group(
+                    'RFG', gases, gas_flows, wt=True
+                )
             case _:
                 raise ValueError(f'invalid feedstock {self.scenario.feedstock!r}')
         chemicals.define_group( # Assume Miscanthus is a good representative biomass
@@ -260,7 +275,7 @@ class EthanolProductionProcess(bst.ProcessModel):
                 system = systems.create_fluegas_hydrogen_ethanol_system(ins=feedstock, fuel_source='BFG')
             case 'RFG/H2':
                 feedstock = bst.Stream(RFG=100, phase='g', P=101325e1)
-                system = systems.create_fluegas_hydrogen_ethanol_system(ins=feedstock)
+                system = systems.create_fluegas_hydrogen_ethanol_system(ins=feedstock, fuel_source='RFG')
             case 'sugarcane':
                 system = systems.create_sugarcane_ethanol_system()
                 feedstock = system.ins[0]
@@ -302,9 +317,6 @@ class EthanolProductionProcess(bst.ProcessModel):
                 'Ethanol RIN D5', self.ethanol_storage.outs[0], 
             )
             
-            # # Selling power displaces electricty from natural gas
-            # bst.settings.set_electricity_CF(GWPkey, CFs['Electricity'])
-            
             # [kg*CO2*eq / kg] From GREET 2023; Miscanthus for ethanol production
             self.BT.fuel.set_CF('GWP', CFs['Miscanthus']) 
             
@@ -315,10 +327,10 @@ class EthanolProductionProcess(bst.ProcessModel):
                 def optimize_length_to_diameter():
                     _optimize_length_to_diameter(self)
             
-        elif scenario.feedstock == 'BFG':
+        elif scenario.feedstock in ('BFG', 'RFG'):
             # https://files.gao.gov/reports/GAO-26-107711/index.html
-            self.carbon_credit = 85 # USD / MT-CO2
-            bst.settings.register_credit('Carbon credit', self.carbon_credit / 1000)
+            self.carbon_credit_45Q = 85 # USD / MT-CO2
+            bst.settings.register_credit('Carbon credit 45Q', self.carbon_credit_45Q / 1000)
             
             def GWP_reduction():
                 GWP_ethanol = carbon_intensity()
@@ -326,7 +338,7 @@ class EthanolProductionProcess(bst.ProcessModel):
                 return GWP_corn_ethanol - GWP_ethanol # kg-CO2e / L-ethanol
             
             self.ethanol_storage.define_credit(
-                'Carbon credit', self.ethanol_storage.outs[0], 
+                'Carbon credit 45Q', self.ethanol_storage.outs[0], 
                 lambda: GWP_reduction() * ethanol_L_per_kg, # kg-CO2e / kg-ethanol
             )
             self.hydrogen.set_CF(GWPkey, CFs['H2'])
@@ -356,15 +368,6 @@ class EthanolProductionProcess(bst.ProcessModel):
             lb = 0.80*baseline
             ub = 1.20*baseline
             return parameter(*args, bounds=(lb, ub), baseline=baseline, distribution='uniform')
-        
-        # # Set a consistent carbon credit instead of RINs
-        # # The range is 100 (commonly cited as cost of carbon capture)
-        # # to 500 (equivalent to value of RIN D3) USD / MT-CO2.
-        # # This value is added as a credit after LCA (and before TEA).
-        # @parameter(bounds=(100, 500), distribution='uniform', element='Ethanol', 
-        #            baseline=310, units='USD/MT-CO2e')
-        # def set_carbon_credit(carbon_credit): # Triangular distribution fitted over the past 10 years Sep 2009 to Nov 2020
-        #     self.carbon_credit = carbon_credit
         
         # USDA ERS historical price data without EPA RIN prices
         @parameter(distribution=dist.ethanol_no_RIN_price_distribution, element='Ethanol', 
@@ -466,7 +469,12 @@ class EthanolProductionProcess(bst.ProcessModel):
         def set_BFG_operating_days(BFG_operating_days):
             if scenario.feedstock != 'BFG': return
             self.tea.operating_days = BFG_operating_days
-            
+        
+        @parameter(bounds=(340, 360), units='day/y', baseline=350, kind='coupled')
+        def set_RFG_operating_days(RFG_operating_days):
+            if scenario.feedstock != 'RFG': return
+            self.tea.operating_days = RFG_operating_days
+        
         # https://www.ipcc-nggip.iges.or.jp/public/2019rf/pdf/3_Volume3/19R_V3_Ch04_Metal_Industry.pdf
         # 5% of BFG is left unused at a steelmill. We can use this as both 
         # feedstock and fuel. We will need solve for the split and then resimulate.
@@ -477,19 +485,12 @@ class EthanolProductionProcess(bst.ProcessModel):
             self.system.rescale(self.feedstock, BFG_processing_capacity / current)
             self._max_processing_capacity = self.feedstock.F_mass
         
-        @metric(units='kg*CO2e/L')
-        def carbon_intensity(): # Energy allocation
-            return self.system.get_product_impact(
-                self.ethanol, GWPkey, allocation_method='energy'
-            ) / ethanol_L_per_kg
-        
-        @metric(units='USD/L')
-        def MSP():
-            return self.tea.solve_price(self.ethanol) / ethanol_L_per_kg
-        
-        @metric(units='10^6 USD')
-        def TCI():
-            return self.tea.TCI / 1e6
+        @parameter(bounds=RFG_available, units='10^6 MT/yr', baseline=RFG_available[0], element='RFG')
+        def set_RFG_processing_capacity(RFG_processing_capacity):
+            if scenario.feedstock != 'RFG': return
+            current = self.feedstock.F_mass * self.tea.operating_hours / 1e9
+            self.system.rescale(self.feedstock, RFG_processing_capacity / current)
+            self._max_processing_capacity = self.feedstock.F_mass
         
         @metric(units='USD/MT')
         def carbon_mitigation_cost():
@@ -503,9 +504,49 @@ class EthanolProductionProcess(bst.ProcessModel):
             ethanol_storage._outlet_revenue = revenue
             return (target_price - actual_price) / GWP_reduction * 1000
         
+        @metric(units='kg*CO2e/L')
+        def carbon_intensity(): # Energy allocation
+            return self.system.get_product_impact(
+                self.ethanol, GWPkey, allocation_method='energy'
+            ) / ethanol_L_per_kg
+        
         @metric(units='%')
         def carbon_efficiency():
-            return 100 * self.ethanol.get_atomic_flow('C') / (self.feedstock.get_atomic_flow('C') + self.BT.fuel.get_atomic_flow('C'))
+            C_in = self.feedstock.get_atomic_flow('C') + self.BT.fuel.get_atomic_flow('C')
+            if self.scenario.feedstock == 'sugarcane': 
+                F_sugarcane = self.feedstock.F_mass / 1e3 # MT / hr
+                GWP_sugarcane = self.sugarcane.characterization_factors['GWP'] # kg-CO2e / kg
+                C_in += GWP_sugarcane * F_sugarcane / self.chemicals.CO2.MW
+            C_out = self.ethanol.get_atomic_flow('C')
+            return 100 * C_out / C_in
+        
+        @metric(units='%')
+        def energy_efficiency():
+            E_out = self.ethanol.LHV
+            E_in = self.feedstock.LHV + self.BT.fuel.LHV
+            if scenario.hydrogen: E_in += self.hydrogen.LHV
+            net_electricity = self.system.power_utility.get_property('rate', 'kJ/hr')
+            if net_electricity < 0: E_out -= net_electricity # Net producing
+            if scenario.feedstock == 'sugarcane':
+                # Add energy from farming/transportation inputs
+                # Assume emissions all come from diesel
+                # TODO: verify with GREET
+                F_sugarcane = self.feedstock.F_mass / 1e3 # MT / hr
+                LHV_diesel = 43000 # kJ / kg
+                GWP_sugarcane = self.sugarcane.characterization_factors['GWP'] # kg-CO2e / kg
+                GWP_diesel = 2.52
+                diesel = F_sugarcane * GWP_sugarcane / GWP_diesel
+                E_diesel = diesel * LHV_diesel
+                E_in += E_diesel
+            return 100 * E_out / E_in
+        
+        @metric(units='USD/L')
+        def MSP():
+            return self.tea.solve_price(self.ethanol) / ethanol_L_per_kg
+        
+        @metric(units='10^6 USD')
+        def TCI():
+            return self.tea.TCI / 1e6
         
         @metric(units='10^3 MT*CO2e/yr')
         def carbon_abated():
@@ -529,9 +570,6 @@ class EthanolProductionProcess(bst.ProcessModel):
         #     return self.system.get_electricity_consumption() / (self.ethanol.F_mass * self.system.operating_hours)
         
         return model
-    
-    def get_sugarcane_ethanol_price(self):
-        return self.set_ethanol_price.last_value + self.set_RIN_D3_price.last_value
     
     def MSP_contributions(self):
         total_cost = self.MSP() * self.ethanol.F_mass * self.tea.operating_hours
