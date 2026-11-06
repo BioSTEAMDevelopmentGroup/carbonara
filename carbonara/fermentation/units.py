@@ -37,7 +37,7 @@ class ReverseWaterGasShiftReactor(bst.Unit):
         self.P = 5 * 101325
         self.reaction = bst.Reaction('CO2 + H2 -> CO + H2O', 'CO2', X=1)
         self.auxiliary('mixer', bst.Mixer, ins=(0-self, 1-self))
-        self.auxiliary('preheater', bst.HXutility, ins=self.mixer-0, outs='', T=529.2 - 10) # TODO: Make this 400 degC, but use bagasse to avoid natural gas 
+        self.auxiliary('preheater', bst.HXutility, ins=self.mixer-0, outs='', T=500) # TODO: Make this 400 degC, but use bagasse to avoid natural gas 
         self.auxiliary('valve', bst.IsenthalpicValve, P=2*101325)
         self.auxiliary('condenser', bst.Flash, ins=self.valve-0, outs=[self-0, self-1], T=273.15 + 37, P=2*101325)
     

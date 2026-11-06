@@ -1,12 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 """
-from biorefineries.gas_fermentation import Biorefinery, TRYBiorefinery
 import numpy as np
 from matplotlib import pyplot as plt
 import biosteam as bst
 import os
-import thermosteam as tmo
 from colorpalette import Color
 
 __all__ = (
